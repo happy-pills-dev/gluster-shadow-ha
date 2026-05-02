@@ -1,0 +1,151 @@
+#cloud-config
+# =============================================================================
+# gluster-shadow-ha — Arbiter Node Cloud-Init
+# =============================================================================
+#
+# Drop this file into any VPS or Raspberry Pi as the cloud-init user-data
+# to spin up a lightweight GlusterFS arbiter node.
+#
+# The arbiter stores ONLY metadata — not file data. A 5–10 GB root disk is
+# more than enough. Any cheap VPS or spare Pi works.
+#
+# USAGE:
+#   Most VPS providers (Hetzner, DigitalOcean, Linode, etc.) let you paste
+#   this as "User data" when creating a new instance.
+#   Raspberry Pi: place this file at /boot/user-data (cloud-init on Ubuntu Pi)
+#
+# AFTER BOOT:
+#   1. SSH into this node and read /etc/motd — it shows the exact peer-probe
+#      command to run from node0.
+#   2. From node0, run:
+#        gluster peer probe <ARBITER_IP>
+#   3. Include this arbiter in your volume create command:
+#        gluster volume create mydata replica 3 arbiter 1 \
+#          <NODE0_IP>:/data/gluster/brick0/vol \
+#          <NODE1_IP>:/data/gluster/brick0/vol \
+#          <ARBITER_IP>:/data/gluster/arbiter \
+#          force
+#
+# SECURITY NOTE:
+#   The arbiter must be on the same trusted network as node0 and node1, or
+#   behind a firewall that only allows GlusterFS port 24007/tcp and the
+#   brick ports 49152-49160/tcp from your node IPs.
+# =============================================================================
+
+# ── System updates ────────────────────────────────────────────────────────────
+package_update: true
+package_upgrade: true
+
+# ── Required packages ─────────────────────────────────────────────────────────
+packages:
+  - glusterfs-server
+  - xfsprogs
+  - lvm2
+  - ufw
+  - curl
+  - net-tools
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+# Uncomment and fill in your SSH public key for passwordless access:
+# users:
+#   - name: ubuntu
+#     ssh_authorized_keys:
+#       - ssh-ed25519 AAAA... your-key-here
+#     sudo: ALL=(ALL) NOPASSWD:ALL
+#     shell: /bin/bash
+
+# ── Files to write before runcmd ─────────────────────────────────────────────
+write_files:
+  - path: /etc/ufw/applications.d/glusterfs
+    permissions: "0644"
+    content: |
+      [GlusterFS]
+      title=GlusterFS daemon and brick ports
+      description=GlusterFS cluster communication
+      ports=24007/tcp|24008/tcp|49152:49160/tcp
+
+  - path: /usr/local/bin/gluster-arbiter-status
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      echo "=== GlusterFS Arbiter Status ==="
+      echo "Hostname : $(hostname)"
+      echo "IP       : $(hostname -I | awk '{print $1}')"
+      echo "glusterd : $(systemctl is-active glusterd)"
+      echo ""
+      echo "--- Peer status ---"
+      gluster peer status 2>/dev/null || echo "(no peers yet)"
+      echo ""
+      echo "--- Volume status ---"
+      gluster volume status 2>/dev/null || echo "(no volumes yet)"
+      echo ""
+      echo "--- Arbiter brick usage ---"
+      df -h /data/gluster/arbiter 2>/dev/null || echo "(brick not yet joined to a volume)"
+
+# ── Commands to run on first boot ─────────────────────────────────────────────
+runcmd:
+  # ── Enable and start GlusterFS ──────────────────────────────────────────────
+  - systemctl enable --now glusterd
+
+  # ── Create arbiter brick directory ──────────────────────────────────────────
+  # The arbiter stores only filesystem metadata, so a small directory is enough.
+  # If you have a dedicated disk, mount it here first (e.g. /dev/vdb → XFS).
+  - mkdir -p /data/gluster/arbiter
+
+  # ── Firewall: allow GlusterFS from anywhere on the private network ─────────
+  # Replace 192.168.1.0/24 with your actual subnet or specific node IPs.
+  # Uncomment if ufw is active on this node:
+  # - ufw allow from 192.168.1.0/24 to any app GlusterFS
+  # - ufw --force enable
+
+  # ── Write helpful MOTD ──────────────────────────────────────────────────────
+  - |
+    ARBITER_IP=$(hostname -I | awk '{print $1}')
+    cat > /etc/motd <<MOTD
+
+    ╔══════════════════════════════════════════════════════════════╗
+    ║           gluster-shadow-ha  ·  ARBITER NODE                ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    This node is configured as a GlusterFS arbiter.
+    It stores only metadata — no file data is kept here.
+
+    STATUS:  $(systemctl is-active glusterd | tr '[:lower:]' '[:upper:]')
+    IP:      ${ARBITER_IP}
+
+    ── NEXT STEPS ──────────────────────────────────────────────────
+
+    1. From NODE0, add this arbiter as a peer:
+
+         gluster peer probe ${ARBITER_IP}
+
+    2. Verify the peer is trusted (from node0):
+
+         gluster peer status
+
+    3. Create the replica-3-arbiter volume (from node0, run ONCE):
+
+         gluster volume create mydata replica 3 arbiter 1 \\
+           <NODE0_IP>:/data/gluster/brick0/vol \\
+           <NODE1_IP>:/data/gluster/brick0/vol \\
+           ${ARBITER_IP}:/data/gluster/arbiter \\
+           force
+
+         gluster volume start mydata
+
+    4. Check arbiter status at any time:
+
+         gluster-arbiter-status
+
+    ────────────────────────────────────────────────────────────────
+    Docs: https://github.com/happy-pills-dev/gluster-shadow-ha
+    MOTD
+
+  # ── Disable dynamic MOTD (Ubuntu default) so our static one shows ──────────
+  - chmod -x /etc/update-motd.d/* 2>/dev/null || true
+
+# ── Final message (visible in cloud-init logs) ────────────────────────────────
+final_message: |
+  gluster-shadow-ha arbiter node is ready.
+  Cloud-init completed in $UPTIME seconds.
+  Run: cat /etc/motd   for next-step instructions.
