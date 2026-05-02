@@ -1,15 +1,78 @@
-# gluster-shadow-ha — HA GlusterFS + Samba cluster on Ubuntu
+# gluster-shadow-ha
 
-A two-node high-availability NAS/compute cluster:
-- **GlusterFS** replica-3 (arbiter) shared filesystem  
-- **CTDB + Samba** floating-VIP SMB share, Windows-accessible  
-- **Systemd boot-chain** hardened against client/server race conditions  
-- **Watchdog timer** for automatic mount recovery  
-- **Overlay filesystem** (shadow mode) on node 0 for write isolation  
-- Optional **LLM stack** (LiteLLM router + Gemini shim or local Ollama)
+A self-healing mirror of your working directory across two Linux machines —
+a laptop and a home server, two office nodes, two bare-metal VMs — that keeps
+working when they're separated and merges automatically when they reconnect.
+
+Built on GlusterFS + Samba + CTDB. No cloud dependency. No sync client.  
+No conflict dialogs. Just a filesystem that heals itself.
+
+---
+
+## The core idea
+
+Most two-node HA storage clusters face an unsolvable dilemma: when the link
+between nodes breaks, you have to choose one of three bad options.
+
+1. **Both nodes freeze** — refuse writes until quorum is restored. Safe but
+   your storage is down.
+2. **One node wins, one loses** — the minority node goes read-only. Half your
+   capacity disappears.
+3. **Both nodes write independently** — you get split-brain data corruption
+   that requires manual resolution to clean up.
+
+This stack takes a fourth path. By giving Node A a **shadow serving layer** —
+a filesystem abstraction that sits between Samba and the GlusterFS volume —
+the primary node can continue accepting reads and writes into a local buffer
+even when the replication link is down. When the link comes back, GlusterFS's
+built-in self-heal daemon reconciles both sides automatically. No quorum
+freeze, no read-only degradation, no manual merge step.
+
+```
+NORMAL OPERATION
+              Node A (primary)              Node B (secondary)
+              ┌──────────────────┐          ┌──────────────────┐
+clients─VIP──►│ Samba            │          │ Samba            │
+              │  /srv/shadow  ───┼──────────┼──► /cluster-share│
+              │  (shadow layer)  │◄ replicate►│  (direct mount) │
+              └──────────────────┘          └──────────────────┘
+
+DURING PARTITION (link between nodes is down)
+              Node A                        Node B
+              ┌──────────────────┐          ┌──────────────────┐
+clients─VIP──►│ Samba ✓ serving  │          │ Samba ✓ serving  │
+              │  /srv/shadow     │  X link  │  /cluster-share  │
+              │  writes → local  │  broken  │  writes → brick  │
+              │  shadow buffer   │          │                  │
+              └──────────────────┘          └──────────────────┘
+                   ↓ link restored ↓
+              GlusterFS self-heal merges both sides
+              shadow buffer drains into replicated volume
+              both nodes back in sync — unattended
+```
+
+The only limit on how long Node A can operate independently is the size of the
+local shadow buffer disk. For typical real-world partitions (minutes to hours),
+this is effectively unlimited.
+
+---
+
+## What it is
+
+A self-contained recipe for turning two ordinary Ubuntu servers into a
+**resilient shared-storage cluster** that any machine on your network — Linux,
+Windows, or macOS — can read and write as a normal network drive.
+
+- **GlusterFS** replicates data in real time; self-heal reconciles on reconnect
+- **Shadow layer (overlayfs)** gives Node A a local write buffer, transparent when healthy
+- **CTDB** manages the floating IP and Samba cluster state across both nodes
+- **Systemd** wires the boot chain with explicit dependencies and a recovery watchdog
 
 Tested on **Ubuntu 24.04 LTS (systemd 255)**.  
 Compatible with Ubuntu 22.04 (minor differences noted).
+
+This file is the full phase-by-phase installation guide.  
+For the project overview see [`github/README.md`](github/README.md).
 
 ---
 
