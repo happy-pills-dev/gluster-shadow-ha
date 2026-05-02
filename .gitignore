@@ -1,0 +1,10 @@
+# Editor and OS artefacts
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local overrides — never commit real IPs or credentials
+*.local
+*.env

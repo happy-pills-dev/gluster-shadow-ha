@@ -1,0 +1,5 @@
+# /etc/ctdb/public_addresses — gluster-shadow-ha template
+# Format: <VIP>/<prefix> <NIC>
+# This file must be IDENTICAL on both nodes.
+# The NIC must be the one that carries each node's primary IP.
+<VIP>/<PREFIX> <VIP_NIC>

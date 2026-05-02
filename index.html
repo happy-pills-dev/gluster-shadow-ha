@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>gluster-shadow-ha — self-healing storage cluster</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #c9d1d9;
+      --muted:    #8b949e;
+      --accent:   #388bfd;
+      --accent-2: #56d364;
+      --warn:     #d29922;
+      --code-bg:  #1f2428;
+      --radius:   8px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      padding: 2rem 1rem;
+    }
+
+    .container { max-width: 860px; margin: 0 auto; }
+
+    header {
+      text-align: center;
+      padding: 3rem 0 2rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 3rem;
+    }
+
+    header h1 {
+      font-size: 2.4rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: #e6edf3;
+      margin-bottom: 0.8rem;
+    }
+
+    header h1 span { color: var(--accent); }
+
+    .tagline {
+      font-size: 1.1rem;
+      color: var(--muted);
+      max-width: 620px;
+      margin: 0 auto 1.5rem;
+    }
+
+    .badges { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 2rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .badge.green { color: var(--accent-2); border-color: var(--accent-2); }
+    .badge.blue  { color: var(--accent);   border-color: var(--accent); }
+
+    h2 {
+      font-size: 1.35rem;
+      color: #e6edf3;
+      margin: 2.5rem 0 1rem;
+      padding-bottom: 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    p { margin-bottom: 1rem; color: var(--text); }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+    }
+
+    .card h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #e6edf3;
+      margin-bottom: 0.5rem;
+    }
+
+    .card p {
+      font-size: 0.88rem;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .highlight-card {
+      background: linear-gradient(135deg, #1a2332 0%, #161b22 100%);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+    }
+
+    .highlight-card h3 {
+      color: var(--accent);
+      font-size: 1rem;
+      margin-bottom: 0.75rem;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      margin: 1rem 0;
+    }
+
+    code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+
+    .ascii-diagram {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      overflow-x: auto;
+      font-size: 0.78rem;
+      line-height: 1.5;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      color: var(--accent-2);
+      margin: 1rem 0;
+    }
+
+    .link-row {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin: 1.5rem 0;
+    }
+
+    .btn {
+      display: inline-block;
+      padding: 0.55rem 1.2rem;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+
+    footer {
+      margin-top: 4rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1><span>gluster</span>-shadow-ha</h1>
+    <p class="tagline">
+      A self-healing mirror of your working directory across two Linux machines —
+      keeps working when they're separated, merges automatically when they reconnect.
+    </p>
+    <div class="badges">
+      <span class="badge green">MIT License</span>
+      <span class="badge blue">Ubuntu 24.04</span>
+      <span class="badge">GlusterFS + Samba + CTDB</span>
+      <span class="badge">No cloud dependency</span>
+    </div>
+  </header>
+
+  <h2>The headline feature</h2>
+
+  <div class="highlight-card">
+    <h3>Split-brain independence — no quorum required</h3>
+    <p>
+      When the link between nodes breaks, most two-node storage clusters degrade: they freeze,
+      go read-only, or force you to manually resolve a conflict. This stack does none of that.
+    </p>
+    <p style="margin-top:0.75rem">
+      Node A keeps serving reads and writes through a local shadow buffer.
+      Node B keeps serving from its own copy. Neither freezes.
+      When the link comes back, GlusterFS self-heal merges both sides automatically — unattended.
+    </p>
+  </div>
+
+  <div class="ascii-diagram"><pre>
+NORMAL OPERATION
+              Node A (primary)              Node B (secondary)
+              ┌──────────────────┐          ┌──────────────────┐
+clients─VIP──►│ Samba            │          │ Samba            │
+              │  /srv/shadow  ───┼──────────┼──► /cluster-share│
+              │  (shadow layer)  │◄ replicate►│  (direct mount) │
+              └──────────────────┘          └──────────────────┘
+
+DURING PARTITION
+              Node A                        Node B
+              ┌──────────────────┐          ┌──────────────────┐
+clients─VIP──►│ Samba ✓ serving  │          │ Samba ✓ serving  │
+              │  writes→ local   │  X link  │  writes→ brick   │
+              │  shadow buffer   │  broken  │                  │
+              └──────────────────┘          └──────────────────┘
+                   ↓ link restored ↓
+              GlusterFS self-heal merges both sides — unattended ✓</pre></div>
+
+  <h2>What it can do</h2>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>🔄 Real-time replication</h3>
+      <p>Both nodes mirror every write in real time over your local network at full disk speed.</p>
+    </div>
+    <div class="card">
+      <h3>🪟 Windows drive mapping</h3>
+      <p>Any client maps <code>\\&lt;VIP&gt;\myshare</code> as a drive letter. No client software needed.</p>
+    </div>
+    <div class="card">
+      <h3>⚡ Transparent failover</h3>
+      <p>A node goes down → CTDB moves the VIP → clients reconnect. No data loss, minimal interruption.</p>
+    </div>
+    <div class="card">
+      <h3>🧲 Auto-merge on reconnect</h3>
+      <p>After a partition, GlusterFS self-heal reconciles both sides. No manual merge step.</p>
+    </div>
+    <div class="card">
+      <h3>🥾 Hardened boot chain</h3>
+      <p>Explicit systemd dependencies and a recovery watchdog bring the full stack up correctly after any reboot or power cut.</p>
+    </div>
+    <div class="card">
+      <h3>📣 Loud failures</h3>
+      <p>Samba refuses to start if storage isn't ready — visible error, not silent empty directories.</p>
+    </div>
+  </div>
+
+  <h2>Who it's for</h2>
+
+  <div class="card-grid">
+    <div class="card">
+      <h3>Laptop + home server</h3>
+      <p>Laptop is Node A. Home server is Node B. Leave home, keep writing. Come back, everything merges. No sync client, no conflict dialogs.</p>
+    </div>
+    <div class="card">
+      <h3>Two office workstations</h3>
+      <p>Share a common project drive. One goes down for maintenance — the other keeps working. It catches up silently when it returns.</p>
+    </div>
+    <div class="card">
+      <h3>Dev + backup node</h3>
+      <p>Production server plus a standby. Shadow layer absorbs writes during secondary failure. Drains in the background on reconnect.</p>
+    </div>
+    <div class="card">
+      <h3>Home lab NAS</h3>
+      <p>Two repurposed mini-PCs. Full HA SMB share with floating IP. Under the cost of a consumer NAS, with complete visibility.</p>
+    </div>
+  </div>
+
+  <h2>Quick start</h2>
+
+  <pre><code># 1. Clone on both nodes
+git clone https://github.com/happy-pills-dev/gluster-shadow-ha
+cd gluster-shadow-ha
+
+# 2. Edit the 15-line variables block
+nano install.sh
+
+# 3. Run on Node A
+sudo ./install.sh --role node0
+
+# 4. Run on Node B  (can run in parallel)
+sudo ./install.sh --role node1
+
+# 5. Create the GlusterFS volume — run ONCE from Node A
+sudo ./install.sh --role node0 --step gluster-volume-create
+
+# 6. Add a Samba user and verify
+sudo smbpasswd -a youruser
+./verify.sh</code></pre>
+
+  <div class="link-row">
+    <a class="btn btn-primary" href="https://github.com/happy-pills-dev/gluster-shadow-ha">View on GitHub</a>
+    <a class="btn btn-secondary" href="https://github.com/happy-pills-dev/gluster-shadow-ha/blob/main/README.md">Full install guide</a>
+    <a class="btn btn-secondary" href="https://github.com/happy-pills-dev/gluster-shadow-ha/blob/main/docs/gotchas.md">Known gotchas</a>
+    <a class="btn btn-secondary" href="https://github.com/happy-pills-dev/gluster-shadow-ha/blob/main/docs/architecture.md">Architecture</a>
+  </div>
+
+  <footer>
+    <p>
+      <a href="https://github.com/happy-pills-dev/gluster-shadow-ha">gluster-shadow-ha</a>
+      — MIT License —
+      Built on GlusterFS, Samba, CTDB, and systemd.
+    </p>
+  </footer>
+
+</div>
+</body>
+</html>

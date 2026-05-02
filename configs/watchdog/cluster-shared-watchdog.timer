@@ -1,0 +1,18 @@
+# /etc/systemd/system/cluster-shared-watchdog.timer
+# Fires the watchdog service every minute, starting 2 minutes after boot.
+# OnBootSec=2min gives glusterd time to reach active state before the first check.
+#
+# Install:
+#   cp cluster-shared-watchdog.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now cluster-shared-watchdog.timer
+
+[Unit]
+Description=Check /cluster-shared mount health every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target

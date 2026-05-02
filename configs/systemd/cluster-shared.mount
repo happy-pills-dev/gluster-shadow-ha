@@ -1,0 +1,31 @@
+# Template: /etc/systemd/system/cluster\x2dshared.mount  (node1)
+#
+# FILENAME NOTE: The filename on disk must be the systemd-escaped version of
+# the mount path /cluster-shared. The hyphen is encoded as \x2d:
+#   cluster\x2dshared.mount
+# Create with: cat > /etc/systemd/system/$(printf 'cluster\x2dshared.mount')
+#
+# CRITICAL: Do NOT add _netdev to the Options= field.
+# On systemd 255 (Ubuntu 24.04), _netdev in a manually-written .mount unit's
+# Options injects an implicit ConditionNetworkConnectivity check that races
+# at boot and causes the unit to be silently skipped. Use explicit After=/
+# Requires= in [Unit] instead — that is both sufficient and reliable.
+
+[Unit]
+Description=Cluster Shared GlusterFS Volume
+Documentation=man:glusterfs(8)
+After=network-online.target glusterd.service
+Wants=network-online.target
+Requires=glusterd.service
+Before=ctdb.service smbd.service nmbd.service
+
+[Mount]
+What=<NODE1_IP>:/<VOLUME_NAME>
+Where=/cluster-shared
+Type=glusterfs
+# NO _netdev HERE — see note above
+Options=defaults,backup-volfile-servers=<NODE0_IP>,log-level=WARNING,log-file=/var/log/glusterfs/cluster-shared-mount.log
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target
