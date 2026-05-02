@@ -81,8 +81,13 @@ def collect_gluster():
     peers_connected = len(re.findall(r"State:.*Connected", raw_peer))
     peers_total     = len(re.findall(r"^Hostname:", raw_peer, re.M))
     vol_started     = "Started" in raw_info
-    bricks_online   = len(re.findall(r"Online\s*:\s*Y", raw_vol, re.I))
-    bricks_total    = len(re.findall(r"Brick Path\s*:", raw_vol, re.I))
+    # GlusterFS 11+ uses columnar output: "Brick host:path  PORT  RDMA  Y  PID"
+    # Older versions use key-value:       "Brick Path : ...\nOnline     : Y"
+    bricks_total  = len(re.findall(r"^Brick\s+\S+", raw_vol, re.M))
+    bricks_online = len(re.findall(r"^Brick\s+\S+.*\s+Y\s+\d+", raw_vol, re.M))
+    if bricks_total == 0:  # fall back to old format
+        bricks_online = len(re.findall(r"Online\s*:\s*Y", raw_vol, re.I))
+        bricks_total  = len(re.findall(r"Brick Path\s*:", raw_vol, re.I))
 
     # Healing: sum "Number of entries: N" across all bricks
     heal_counts = [int(x) for x in re.findall(r"Number of entries:\s*(\d+)", raw_heal)]
