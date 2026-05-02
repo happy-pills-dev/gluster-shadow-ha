@@ -28,6 +28,15 @@ import subprocess, socket, os, json, time, re
 from datetime import datetime
 
 try:
+    import psutil
+    PSUTIL = True
+except ImportError:
+    PSUTIL = False
+
+# state for network rate calculation (persists across requests)
+_net_state = {"prev": None, "t": 0.0}
+
+try:
     from flask import Flask, jsonify, render_template_string, request as flask_request
     FLASK = True
 except ImportError:
@@ -57,6 +66,12 @@ def sh(cmd, timeout=6):
 
 def mountpoint(path):
     return os.path.ismount(path)
+
+def _fmt_bytes(b):
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if abs(b) < 1024: return f"{b:.0f} {u}"
+        b /= 1024
+    return f"{b:.1f} PB"
 
 def disk_free(path):
     try:
@@ -247,6 +262,48 @@ def collect_splitbrain_detail():
 
     return result
 
+def collect_system():
+    """CPU %, RAM %, disk %, and network throughput via psutil."""
+    if not PSUTIL:
+        return {"available": False}
+
+    cpu_pct = psutil.cpu_percent(interval=None)   # non-blocking; samples since last call
+    mem     = psutil.virtual_memory()
+
+    # disk — prefer cluster mount, fall back to /
+    try:
+        dp   = CLUSTER_MOUNT if mountpoint(CLUSTER_MOUNT) else "/"
+        du   = psutil.disk_usage(dp)
+        disk_pct = round(du.percent, 1)
+    except Exception:
+        disk_pct = 0
+
+    # network rate — delta since last call
+    net = psutil.net_io_counters()
+    now = time.time()
+    rx_bps = tx_bps = 0
+    prev = _net_state["prev"]
+    if prev is not None:
+        dt = now - _net_state["t"]
+        if dt > 0.05:
+            rx_bps = max(0, int((net.bytes_recv - prev.bytes_recv) / dt))
+            tx_bps = max(0, int((net.bytes_sent - prev.bytes_sent) / dt))
+    _net_state["prev"] = net
+    _net_state["t"]    = now
+
+    return {
+        "available": True,
+        "cpu_pct":   round(cpu_pct, 1),
+        "mem_pct":   round(mem.percent, 1),
+        "mem_used":  _fmt_bytes(mem.used),
+        "mem_total": _fmt_bytes(mem.total),
+        "disk_pct":  disk_pct,
+        "rx_bps":    rx_bps,
+        "tx_bps":    tx_bps,
+        "rx_fmt":    _fmt_bytes(rx_bps) + "/s",
+        "tx_fmt":    _fmt_bytes(tx_bps) + "/s",
+    }
+
 def get_all_status():
     return {
         "hostname":  HOSTNAME,
@@ -256,6 +313,7 @@ def get_all_status():
         "mounts":    collect_mounts(),
         "watchdog":  collect_watchdog(),
         "services":  collect_services(),
+        "system":    collect_system(),
     }
 
 # ── HTML template ─────────────────────────────────────────────────────────────
@@ -364,6 +422,13 @@ HTML = r"""<!DOCTYPE html>
   .modal-footer{display:flex;justify-content:flex-end;gap:.5rem;
     padding-top:1rem;margin-top:.5rem;border-top:1px solid var(--border)}
   .policy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:.5rem}
+
+  /* ── system metrics chart ── */
+  .chart-wrap{width:100%;overflow:hidden}
+  .chart-wrap svg{display:block;width:100%;height:auto}
+  .sys-legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;margin-top:.6rem;font-size:.72rem;color:var(--muted)}
+  .sys-legend span::before{content:"●";margin-right:.25rem}
+  .sys-legend .lg{color:var(--green)}.sys-legend .ly{color:var(--yellow)}.sys-legend .lr{color:var(--red)}.sys-legend .lb{color:var(--blue)}
   .file-card{background:var(--bg);border:1px solid var(--border);border-radius:4px;
     padding:.75rem;margin-bottom:.6rem}
   .file-card .fc-path{font-family:monospace;font-weight:600;margin-bottom:.5rem;
@@ -578,6 +643,23 @@ HTML = r"""<!DOCTYPE html>
 </div>
 
 </div><!-- /grid -->
+
+<!-- ── System metrics card ───────────────────────────────────────────────────── -->
+<div class="card" style="margin-bottom:1rem">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
+    <h2 style="margin:0">System metrics</h2>
+    <span style="font-size:.72rem;color:var(--muted)" id="sys-ts">—</span>
+  </div>
+  <div class="chart-wrap" id="sys-chart">
+    <div style="color:var(--muted);font-size:.85rem;padding:.5rem 0">Loading…</div>
+  </div>
+  <div class="sys-legend">
+    <span class="lg">≤ 70% — normal</span>
+    <span class="ly">70–90% — elevated</span>
+    <span class="lr">&gt; 90% — critical</span>
+    <span class="lb">network (auto-scaled)</span>
+  </div>
+</div>
 
 <!-- ── Watchdog log card ─────────────────────────────────────────────────────── -->
 <div class="card">
@@ -798,6 +880,122 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+// ── system metrics bar chart ──────────────────────────────────────────────
+// server-baked initial data — chart renders before any fetch completes
+var initSys = {{ data.system|tojson }};
+var netPeak = 1024 * 1024; // auto-scale floor: 1 MB/s
+
+function pctColor(v) {
+  return v >= 90 ? '#f85149' : v >= 70 ? '#d29922' : '#56d364';
+}
+
+function renderSysChart(sys) {
+  if (!sys || !sys.available) {
+    document.getElementById('sys-chart').innerHTML =
+      '<div style="color:var(--muted);font-size:.82rem;padding:.4rem 0">' +
+      'psutil not installed — run: pip install psutil</div>';
+    return;
+  }
+
+  // auto-scale network
+  netPeak = Math.max(netPeak, sys.rx_bps, sys.tx_bps);
+
+  var bars = [
+    { label: 'CPU',    sub: sys.cpu_pct + '%',  pct: sys.cpu_pct,  color: pctColor(sys.cpu_pct) },
+    { label: 'RAM',    sub: sys.mem_pct + '%',  pct: sys.mem_pct,  color: pctColor(sys.mem_pct) },
+    { label: 'Disk',   sub: sys.disk_pct + '%', pct: sys.disk_pct, color: pctColor(sys.disk_pct) },
+    { label: '↓ Net',  sub: sys.rx_fmt,          pct: Math.min(100, sys.rx_bps / netPeak * 100), color: '#388bfd' },
+    { label: '↑ Net',  sub: sys.tx_fmt,          pct: Math.min(100, sys.tx_bps / netPeak * 100), color: '#388bfd' },
+  ];
+
+  // SVG layout
+  var BW  = 64;   // bar width
+  var GAP = 22;   // gap between bars
+  var CH  = 110;  // chart height (bar area)
+  var PT  = 22;   // pad top (value label)
+  var PB  = 38;   // pad bottom (name + sub-label)
+  var PL  = 16;   // pad left
+  var n   = bars.length;
+  var svgW = PL * 2 + n * BW + (n - 1) * GAP;
+  var svgH = PT + CH + PB;
+
+  // horizontal grid lines at 25 / 50 / 75 %
+  var gridLines = '';
+  [25, 50, 75].forEach(function(g) {
+    var y = PT + CH - (g / 100 * CH);
+    gridLines +=
+      '<line x1="' + PL + '" y1="' + y + '" x2="' + (svgW - PL) + '" y2="' + y + '" ' +
+      'stroke="rgba(255,255,255,0.06)" stroke-width="1"/>' +
+      '<text x="' + (PL - 3) + '" y="' + (y + 4) + '" text-anchor="end" ' +
+      'font-size="8" fill="rgba(255,255,255,0.25)">' + g + '</text>';
+  });
+
+  var rects = '';
+  bars.forEach(function(b, i) {
+    var x  = PL + i * (BW + GAP);
+    var bh = Math.max(2, b.pct / 100 * CH);
+    var by = PT + CH - bh;
+    var cx = x + BW / 2;
+
+    // background track
+    rects +=
+      '<rect x="' + x + '" y="' + PT + '" width="' + BW + '" height="' + CH + '" ' +
+      'rx="5" fill="rgba(255,255,255,0.04)"/>';
+    // bar (rounded top only)
+    rects +=
+      '<rect x="' + x + '" y="' + by + '" width="' + BW + '" height="' + bh + '" ' +
+      'rx="5" fill="' + b.color + '" opacity="0.88"/>';
+    // percentage label above bar
+    rects +=
+      '<text x="' + cx + '" y="' + (by - 5) + '" text-anchor="middle" ' +
+      'font-size="10" font-weight="600" fill="' + b.color + '">' + esc(b.sub) + '</text>';
+    // name label below chart
+    rects +=
+      '<text x="' + cx + '" y="' + (PT + CH + 16) + '" text-anchor="middle" ' +
+      'font-size="11" fill="#c9d1d9">' + esc(b.label) + '</text>';
+    // secondary info below name
+    if (b.label === 'RAM') {
+      rects +=
+        '<text x="' + cx + '" y="' + (PT + CH + 29) + '" text-anchor="middle" ' +
+        'font-size="9" fill="#8b949e">' + esc(sys.mem_used + ' / ' + sys.mem_total) + '</text>';
+    } else if (b.label === '↓ Net' || b.label === '↑ Net') {
+      rects +=
+        '<text x="' + cx + '" y="' + (PT + CH + 29) + '" text-anchor="middle" ' +
+        'font-size="9" fill="#8b949e">peak ' + esc(_fmt(netPeak) + '/s') + '</text>';
+    }
+  });
+
+  document.getElementById('sys-chart').innerHTML =
+    '<svg viewBox="0 0 ' + svgW + ' ' + svgH + '" xmlns="http://www.w3.org/2000/svg">' +
+    gridLines + rects + '</svg>';
+
+  document.getElementById('sys-ts').textContent =
+    'updated ' + new Date().toLocaleTimeString();
+}
+
+function _fmt(b) {
+  var u = ['B','KB','MB','GB'];
+  for (var i = 0; i < u.length; i++) {
+    if (Math.abs(b) < 1024) return b.toFixed(0) + ' ' + u[i];
+    b /= 1024;
+  }
+  return b.toFixed(1) + ' TB';
+}
+
+function updateSysMetrics() {
+  fetch('/api/status')
+    .then(function(r) { return r.json(); })
+    .then(function(d) { renderSysChart(d.system); })
+    .catch(function() {
+      document.getElementById('sys-ts').textContent = 'fetch failed';
+    });
+}
+
+// render immediately with server-baked data, then poll every 5 s for live updates
+renderSysChart(initSys);
+updateSysMetrics();
+setInterval(updateSysMetrics, 5000);
 </script>
 </body></html>"""
 
