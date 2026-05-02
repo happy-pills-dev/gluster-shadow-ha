@@ -121,7 +121,9 @@ Map a drive on Windows: `\\<VIP>\myshare`
 ### Check cluster health
 
 ```bash
-# Interactive web dashboard (port 9000)
+# Web dashboard — open in browser at http://<node-ip>:9000  (or /cluster/ via Caddy)
+sudo systemctl status gluster-dashboard   # check if already running
+# or run directly:
 sudo python3 scripts/dashboard.py
 
 # Command-line health check
@@ -548,13 +550,232 @@ during normal operation and only surface on a cold boot after a configuration ch
 
 ### Web dashboard
 
+See the **[Web dashboard](#web-dashboard)** section below for full details, screenshots,
+and setup instructions.
+
+---
+
+## Web dashboard
+
+`scripts/dashboard.py` is a self-refreshing status and control panel that runs on
+every cluster node. It requires no external database or message broker — just Python
+and Flask (or the stdlib fallback if Flask is not installed).
+
+### Overview
+
+[![Dashboard overview](docs/dashboard-overview.png)](docs/dashboard-overview.png)
+
+> *axiom0 (node0) — 7/7 checks passing, holding the floating VIP, watchdog log scrolling green.*
+
+The dashboard auto-refreshes every 30 seconds. Click the **↻ refresh** badge to reload
+immediately. The countdown pauses while an action is in-flight or a modal is open so
+you don't lose your place.
+
+---
+
+### What each panel shows
+
+#### Cluster health bar
+A single at-a-glance score (N/7 checks passing). The bar turns yellow below 100 % and
+red below 70 %. The seven checks are:
+
+| # | Check |
+|---|---|
+| 1 | `glusterd.service` is active |
+| 2 | GlusterFS volume is in **Started** state |
+| 3 | `/cluster-shared` is mounted |
+| 4 | `smbd.service` is active |
+| 5 | `ctdb.service` is active |
+| 6 | CTDB reports at least one OK node |
+| 7 | Watchdog log last entry is `OK` |
+
+#### GlusterFS panel
+Shows peer count, volume state, brick online ratio, and self-heal status.
+A pulsing yellow bar means heal entries are pending; a green line means the volume
+is fully in sync. A **⚠ Split-brain** alert appears when `gluster volume heal … info
+split-brain` reports affected files — click **Resolve…** to open the interactive modal.
+
+#### CTDB / Floating VIP panel
+Shows whether the CTDB daemon is active, how many nodes are healthy, and whether
+*this* node currently holds the floating VIP. The ⚡ badge in the header repeats the
+VIP address for instant recognition.
+
+#### Storage mounts panel
+Shows mount state and disk usage for `/cluster-shared` (both nodes) and `/srv/shadow`
+(node0 only). A disk bar turns yellow above 75 % used and red above 90 %.
+
+#### Services panel
+Live `systemctl is-active` state for every critical service:
+`glusterd`, `smbd`, `nmbd`, `ctdb`, `shadow-layer-setup`, `cluster-shared-watchdog.timer`.
+
+#### Watchdog log panel
+Last 15 lines of `/var/log/cluster-shared-watchdog.log`, colour-coded:
+- 🟢 green — `OK — /cluster-shared is mounted`
+- 🟡 yellow — recovery or `NOT mounted`
+- 🔴 red — `FAILED`
+
+---
+
+### Interactive controls
+
+Every panel that can be in a bad state surfaces a one-click fix button.
+A confirmation dialog appears before any destructive action; a toast notification
+slides in from the bottom-right with the command output.
+
+| Situation | Control |
+|---|---|
+| Volume needs a heal cycle | **⟳ Trigger Heal** — fires `gluster volume heal <vol>` |
+| Split-brain detected | **⚠ Resolve Split-Brain** — opens the modal below |
+| A service is `inactive` | **↺** restart button next to the service row |
+| CTDB is down | **↺ restart** button in the CTDB panel |
+| A mount is not mounted | **↺ mount** button in the Mounts panel |
+
+#### Split-brain resolution modal
+
+[![Split-brain resolution modal](docs/dashboard-splitbrain.png)](docs/dashboard-splitbrain.png)
+
+> *The modal shows two affected files with brick paths, file sizes, and modification
+> times. The local-brick copy has a green **Use this** button; the remote-node brick
+> is labelled "remote node" (stat it from the other node's dashboard).*
+
+**Automatic policy** — resolves all split-brain files at once by setting
+`cluster.favorite-child-policy` to one of:
+
+| Policy | Keeps |
+|---|---|
+| 📅 Newest mtime | the copy with the most recent write time |
+| 🕐 Newest ctime | the copy with the most recent metadata change |
+| 📦 Largest file | the copy with the most bytes |
+| 🗳 Majority | quorum vote (needs an arbiter for true majority) |
+
+**Per-file manual** — if you know exactly which brick has the right copy, click
+**Use this** on that brick row. This runs `gluster volume heal <vol> split-brain
+source-brick <brick> <file>` for that one file only.
+
+> **Note:** brick stats are only available for bricks that are local to the node
+> running the dashboard. For the remote brick, open the other node's dashboard.
+
+---
+
+### Two-node view
+
+Both nodes run an independent dashboard instance. Each shows its own perspective —
+which node holds the VIP, whether that node's local shadow mount is up, etc.
+
+| Node | Dashboard URL |
+|---|---|
+| axiom0 (node A) | `http://192.168.0.120/cluster/` |
+| axiom1 (node B) | `http://192.168.0.110/cluster/` |
+
+[![Dashboard on axiom1](docs/dashboard-axiom1.png)](docs/dashboard-axiom1.png)
+
+> *axiom1 — same 7/7 health score; VIP ownership shows "VIP on other node" because
+> axiom0 currently holds it. No shadow-mount row because node1 has no shadow overlay.*
+
+---
+
+### Setup — deploy the dashboard on a new node
+
 ```bash
-sudo python3 scripts/dashboard.py
-# Open http://<node-ip>:9000
+# 1. Copy the script to a permanent location
+sudo mkdir -p /opt/gluster-shadow-ha
+sudo cp scripts/dashboard.py /opt/gluster-shadow-ha/
+
+# 2. Create a venv and install Flask (avoids Debian system-package conflicts)
+sudo python3 -m venv /opt/gluster-shadow-ha/.venv
+sudo /opt/gluster-shadow-ha/.venv/bin/pip install flask psutil
+
+# 3. Write the systemd service unit
+sudo tee /etc/systemd/system/gluster-dashboard.service > /dev/null << 'EOF'
+[Unit]
+Description=gluster-shadow-ha web status dashboard
+After=network.target glusterd.service ctdb.service
+Wants=glusterd.service
+
+[Service]
+Type=simple
+ExecStart=/opt/gluster-shadow-ha/.venv/bin/python3 /opt/gluster-shadow-ha/dashboard.py
+Restart=on-failure
+RestartSec=15
+Environment=DASHBOARD_PORT=9000
+Environment=GLUSTER_VOL=axiom-shared
+Environment=CLUSTER_MOUNT=/cluster-shared
+Environment=SHADOW_MOUNT=/srv/shadow
+Environment=WATCHDOG_LOG=/var/log/cluster-shared-watchdog.log
+WorkingDirectory=/opt/gluster-shadow-ha
+StandardOutput=append:/var/log/gluster-dashboard.log
+StandardError=append:/var/log/gluster-dashboard.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 4. Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable --now gluster-dashboard
+sudo systemctl status gluster-dashboard
+
+# 5. Verify
+curl -s http://localhost:9000/api/status | python3 -m json.tool | head -20
 ```
 
-Shows: GlusterFS peer status · volume health · self-heal progress · CTDB/VIP status ·
-mount state · watchdog log · disk usage. No dependencies — runs on stdlib or Flask.
+Adjust `GLUSTER_VOL`, `CLUSTER_MOUNT`, and `SHADOW_MOUNT` to match your environment.
+
+#### Expose on port 80 via Caddy
+
+If the node already runs a Caddy reverse proxy, add a `/cluster` handle to your
+Caddyfile (replace `NODE_IP` with the node's LAN IP):
+
+```caddy
+# In your http :80 block:
+handle /cluster* {
+    uri strip_prefix /cluster
+    reverse_proxy NODE_IP:9000
+}
+
+# In your https block (before the catch-all):
+handle /cluster* {
+    uri strip_prefix /cluster
+    reverse_proxy NODE_IP:9000
+}
+```
+
+Reload Caddy after editing:
+```bash
+docker exec <caddy-container> caddy reload --config /etc/caddy/Caddyfile
+```
+
+#### API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Full HTML dashboard |
+| `GET` | `/api/status` | JSON snapshot of all cluster state |
+| `GET` | `/api/splitbrain_detail` | Per-file, per-brick stats for split-brain files |
+| `POST` | `/api/action` | Execute a cluster action (JSON body) |
+
+`POST /api/action` accepts a JSON body with an `action` field:
+
+```jsonc
+// Trigger a full self-heal cycle
+{ "action": "heal" }
+
+// Resolve all split-brain by policy (mtime | ctime | size | majority)
+{ "action": "heal_splitbrain_policy", "policy": "mtime" }
+
+// Resolve one file from a specific brick
+{ "action": "heal_splitbrain_brick",
+  "brick": "10.0.1.7:/data/gluster/brick0/vol",
+  "file": "/documents/report.docx" }
+
+// Restart an allowlisted service
+{ "action": "restart_service", "service": "glusterd" }
+
+// Re-mount a filesystem (lazy-unmount then mount from fstab)
+{ "action": "remount", "target": "cluster" }   // or "shadow"
+```
+
+All actions return `{ "ok": true|false, "output": "..." }`.
 
 ---
 
@@ -681,7 +902,10 @@ gluster-shadow-ha/
 │
 ├── docs/
 │   ├── architecture.md            component deep-dive and partition behaviour
-│   └── gotchas.md                 all known failure modes with root causes and fixes
+│   ├── gotchas.md                 all known failure modes with root causes and fixes
+│   ├── dashboard-overview.png     screenshot — full dashboard (axiom0)
+│   ├── dashboard-axiom1.png       screenshot — dashboard from node1's perspective
+│   └── dashboard-splitbrain.png   screenshot — split-brain resolution modal
 │
 └── .github/
     └── workflows/
