@@ -973,3 +973,7 @@ journalctl -b 0 | grep -E '(glusterd|ctdb|smbd|cluster)' | tail -40
 gluster peer status
 gluster volume status
 ```
+
+## Author
+
+**axiom.systems** — [admin@axiom.systems](mailto:admin@axiom.systems)
