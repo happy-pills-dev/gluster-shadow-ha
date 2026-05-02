@@ -1,0 +1,31 @@
+name: ShellCheck
+
+on:
+  push:
+    paths:
+      - '**.sh'
+      - 'configs/watchdog/**'
+  pull_request:
+    paths:
+      - '**.sh'
+      - 'configs/watchdog/**'
+
+jobs:
+  shellcheck:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+          # SC2034 = unused variable (common in config-at-top scripts)
+          # SC2154 = referenced but not assigned (template placeholders)
+          ignore_paths: >
+            configs/watchdog/cluster-shared-watchdog.sh
+          additional_files: |
+            configs/watchdog/cluster-shared-watchdog.sh
