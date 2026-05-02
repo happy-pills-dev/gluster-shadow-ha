@@ -976,4 +976,4 @@ gluster volume status
 
 ## Author
 
-**axiom.systems** — [admin@axiom.systems](mailto:admin@axiom.systems)
+**axiom.systems** — admin @ axiom.systems
