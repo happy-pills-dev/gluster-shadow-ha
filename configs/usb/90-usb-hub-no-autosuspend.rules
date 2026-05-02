@@ -1,0 +1,3 @@
+# Genesys Logic USB hubs — de-authorize so kernel never binds a driver to them
+SUBSYSTEM=="usb", ATTR{idVendor}=="05e3", ATTR{idProduct}=="0610", ATTR{authorized}="0"
+SUBSYSTEM=="usb", ATTR{idVendor}=="05e3", ATTR{idProduct}=="0625", ATTR{authorized}="0"

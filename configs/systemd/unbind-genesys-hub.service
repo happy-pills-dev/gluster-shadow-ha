@@ -1,0 +1,12 @@
+[Unit]
+Description=De-authorize Genesys USB hubs to prevent kworker interrupt storm
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '  for d in /sys/bus/usb/devices/*/idVendor; do     dir=$(dirname $d);     vid=$(cat $d 2>/dev/null);     pid=$(cat $dir/idProduct 2>/dev/null);     if [ "$vid" = "05e3" ]; then       echo 0 > $dir/authorized 2>/dev/null && echo "de-authorized $dir";     fi;   done'
+
+[Install]
+WantedBy=multi-user.target
