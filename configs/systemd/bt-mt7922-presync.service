@@ -1,0 +1,19 @@
+[Unit]
+Description=De-authorize MT7922 Bluetooth USB before shutdown/reboot (prevents firmware stuck state)
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target
+RequiresMountsFor=/sys
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStop=/bin/bash -c '\
+  for d in /sys/bus/usb/devices/*/; do \
+    vid=$(cat ${d}idVendor 2>/dev/null); pid=$(cat ${d}idProduct 2>/dev/null); \
+    if [ "$vid" = "13d3" ] && [ "$pid" = "3585" ]; then \
+      echo 0 > "${d}authorized" 2>/dev/null && echo "bt-presync: de-authorized MT7922 BT at $d"; \
+    fi; \
+  done'
+
+[Install]
+WantedBy=multi-user.target
